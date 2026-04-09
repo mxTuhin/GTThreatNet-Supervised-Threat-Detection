@@ -1,0 +1,41 @@
+# --- Environments ---
+memory/
+venv/
+.env
+
+# --- Data & model weights ---
+data/
+*.pt
+*.onnx
+*.engine
+*.tflite
+*.pb
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Ultralytics / YOLO runtime ---
+runs/
+wandb/
+mlruns/
+*.yaml.bak

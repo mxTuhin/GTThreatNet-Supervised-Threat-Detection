@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/mxtuhin/projects/person-follow-research/**)",
+      "Bash(python3 -c ':*)"
+    ]
+  }
+}

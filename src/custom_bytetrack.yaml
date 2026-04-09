@@ -1,0 +1,12 @@
+# ByteTrack config tuned for stable long-term person tracking
+# Use this as a fallback if BoT-SORT ReID causes issues (no GPU, etc.)
+# At 24 fps: track_buffer=120 → 5 s grace before a lost track is dropped
+
+tracker_type: bytetrack
+
+track_high_thresh: 0.35
+track_low_thresh: 0.10
+new_track_thresh: 0.50      # only create new ID for confident unmatched detections
+track_buffer: 120           # 5 s grace at 24 fps
+match_thresh: 0.70          # slightly relaxed IoU match (helps with fast movers)
+fuse_score: True
