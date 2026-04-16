@@ -5,7 +5,9 @@ from utilities.trajectory_utils import (
     vector_from_points,
     cosine_similarity,
     average_distance,
-    behind_ratio
+    behind_ratio,
+    distance_variance,
+    speed_similarity
 )
 import cv2
 import numpy as np
@@ -82,21 +84,27 @@ def score_following(leader_points, follower_points):
     dir_sim = cosine_similarity(leader_vec, follower_vec)
     avg_dist = average_distance(leader_points, follower_points)
     b_ratio = behind_ratio(leader_points, follower_points)
+    dist_var = distance_variance(leader_points, follower_points)
+    spd_sim = speed_similarity(leader_points, follower_points)
 
     if avg_dist is None:
         return None
 
     score = 0.0
-    score += max(0.0, dir_sim) * 0.5
+    score += max(0.0, dir_sim) * 0.4
     score += b_ratio * 0.3
+    score += spd_sim * 0.15
 
     # Distance preference: closer but not too close
     if MIN_AVG_DISTANCE <= avg_dist <= MAX_AVG_DISTANCE:
-        score += 0.2
+        score += 0.15
 
     return {
+        "num_points": min(len(leader_points), len(follower_points)),
         "direction_similarity": dir_sim,
-        "average_distance": avg_dist,
+        "avg_distance": avg_dist,
+        "distance_variance": dist_var,
+        "speed_similarity": spd_sim,
         "behind_ratio": b_ratio,
         "score": score
     }
@@ -235,7 +243,7 @@ def main():
             if (
                 info["direction_similarity"] >= MIN_DIRECTION_SIM
                 and info["behind_ratio"] >= MIN_BEHIND_RATIO
-                and MIN_AVG_DISTANCE <= info["average_distance"] <= MAX_AVG_DISTANCE
+                and MIN_AVG_DISTANCE <= info["avg_distance"] <= MAX_AVG_DISTANCE
             ):
                 leader_summary = summaries.get(leader_id, {})
                 follower_summary = summaries.get(follower_id, {})
@@ -269,7 +277,7 @@ def main():
             f"Follower={r['follower_id']}[{r.get('follower_start')}-{r.get('follower_end')}|n={r.get('follower_count')}] "
             f"score={r['score']:.3f} "
             f"dir_sim={r['direction_similarity']:.3f} "
-            f"avg_dist={r['average_distance']:.1f} "
+            f"avg_dist={r['avg_distance']:.1f} "
             f"behind_ratio={r['behind_ratio']:.2f}"
         )
 

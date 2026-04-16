@@ -1,5 +1,6 @@
 import os
 import csv
+import math
 import cv2
 import numpy as np
 from ultralytics import YOLO
@@ -69,6 +70,88 @@ def draw_trajectories(frame, trajectory_history: dict):
         pts_arr = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
         cv2.polylines(frame, [pts_arr], isClosed=False, color=color, thickness=2)
 
+
+# ---------------------------
+# Direction helpers
+# ---------------------------
+
+# How many recent points to use for direction smoothing.
+# More points = smoother but slower to react to direction changes.
+DIRECTION_SMOOTH_N = 12
+
+_DIR_LABELS = ["right", "down-right", "down", "down-left", "left", "up-left", "up", "up-right"]
+_DIR_ARROWS = ["→",     "↘",          "↓",    "↙",         "←",    "↖",       "↑",  "↗"]
+
+
+def compute_direction(pts: list, smooth_n: int = DIRECTION_SMOOTH_N):
+    """
+    Returns (label, arrow_char, unit_vx, unit_vy) from recent trajectory points,
+    or None if the person is stationary / too few points.
+
+    Uses the centroid of the first half vs second half of the last `smooth_n`
+    points so a single noisy detection doesn't flip the arrow.
+    """
+    if len(pts) < 4:
+        return None
+
+    recent = pts[-smooth_n:]
+    mid = len(recent) // 2
+    first_half  = recent[:mid]
+    second_half = recent[mid:]
+
+    x1 = sum(p[0] for p in first_half)  / len(first_half)
+    y1 = sum(p[1] for p in first_half)  / len(first_half)
+    x2 = sum(p[0] for p in second_half) / len(second_half)
+    y2 = sum(p[1] for p in second_half) / len(second_half)
+
+    vx, vy = x2 - x1, y2 - y1
+    mag = math.sqrt(vx ** 2 + vy ** 2)
+
+    if mag < 2.5:           # basically stationary — skip arrow
+        return None
+
+    angle = math.degrees(math.atan2(vy, vx))   # screen coords: y grows downward
+    if angle < 0:
+        angle += 360
+
+    idx = int((angle + 22.5) % 360 / 45)
+    return _DIR_LABELS[idx], _DIR_ARROWS[idx], vx / mag, vy / mag
+
+
+def entry_side(pts: list, frame_w: int, frame_h: int, margin: float = 0.12) -> str:
+    """
+    Returns which edge of the frame the person first appeared near:
+    'left', 'right', 'top', 'bottom', or 'center'.
+    `margin` is the fraction of frame dimensions considered "near an edge".
+    """
+    if not pts:
+        return "center"
+    x, y = pts[0]
+    left_thr   = frame_w * margin
+    right_thr  = frame_w * (1 - margin)
+    top_thr    = frame_h * margin
+    bottom_thr = frame_h * (1 - margin)
+
+    near_left   = x < left_thr
+    near_right  = x > right_thr
+    near_top    = y < top_thr
+    near_bottom = y > bottom_thr
+
+    # prefer horizontal edge if both axes are near a border
+    if near_left:   return "left"
+    if near_right:  return "right"
+    if near_top:    return "top"
+    if near_bottom: return "bottom"
+    return "center"
+
+
+def draw_direction_arrow(frame, cx: int, cy: int, unit_vx: float, unit_vy: float,
+                         color, length: int = 40):
+    """Draw an arrow from (cx, cy) pointing in the direction of movement."""
+    tip_x = int(cx + unit_vx * length)
+    tip_y = int(cy + unit_vy * length)
+    cv2.arrowedLine(frame, (cx, cy), (tip_x, tip_y), color, 2, tipLength=0.35)
+
 def main():
     model = YOLO(MODEL_NAME)
 
@@ -99,10 +182,14 @@ def main():
     # trajectory history: track_id -> list of (cx, cy) in order
     trajectory_history: dict = defaultdict(list)
 
+    # entry_side_cache: computed once per track_id on first appearance
+    entry_side_cache: dict = {}
+
     with open(OUTPUT_CSV_PATH, "w", newline="") as f:
         csv_writer = csv.writer(f)
         csv_writer.writerow([
-            "frame_idx", "track_id", "x1", "y1", "x2", "y2", "cx", "cy", "confidence"
+            "frame_idx", "track_id", "x1", "y1", "x2", "y2", "cx", "cy",
+            "confidence", "direction", "entry_side"
         ])
 
         frame_idx = 0
@@ -141,11 +228,6 @@ def main():
                         confidence = float(confs[i]) if len(confs) > i else 0.0
                         cx, cy = get_box_center(x1, y1, x2, y2)
 
-                        # write detection row
-                        csv_writer.writerow([
-                            frame_idx, track_id, x1, y1, x2, y2, cx, cy, confidence
-                        ])
-
                         # update per-track stats
                         stats = track_stats[track_id]
                         stats["count"] += 1
@@ -160,15 +242,41 @@ def main():
                         if TRAJECTORY_MAXLEN is not None and len(pts) > TRAJECTORY_MAXLEN:
                             del pts[0]
 
+                        # entry side — determined once on first detection
+                        if track_id not in entry_side_cache:
+                            entry_side_cache[track_id] = entry_side(pts, width, height)
+                        e_side = entry_side_cache[track_id]
+
+                        # movement direction from smoothed trajectory
+                        dir_info  = compute_direction(pts)
+                        dir_label = dir_info[0] if dir_info else ""
+                        dir_arrow = dir_info[1] if dir_info else ""
+
+                        # write detection row
+                        csv_writer.writerow([
+                            frame_idx, track_id, x1, y1, x2, y2, cx, cy,
+                            confidence, dir_label, e_side
+                        ])
+
                         color = track_color(track_id)
                         cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
                         cv2.circle(annotated, (cx, cy), 4, color, -1)
+
+                        # direction arrow from center point
+                        if dir_info:
+                            draw_direction_arrow(annotated, cx, cy, dir_info[2], dir_info[3], color)
+
+                        # label line: "ID 3  → right  [from left]"
+                        label = f"ID {track_id}"
+                        if dir_arrow:
+                            label += f"  {dir_arrow} {dir_label}"
+                        label += f"  [from {e_side}]"
                         cv2.putText(
                             annotated,
-                            f"ID {track_id}",
+                            label,
                             (x1, max(20, y1 - 10)),
                             cv2.FONT_HERSHEY_SIMPLEX,
-                            0.6,
+                            0.5,
                             (255, 255, 255),
                             2
                         )

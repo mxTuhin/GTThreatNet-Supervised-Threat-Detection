@@ -90,3 +90,44 @@ def behind_ratio(points_leader, points_follower):
                 count_behind += 1
 
     return count_behind / n
+
+
+def distance_variance(points_a, points_b):
+    """
+    Variance of per-frame distances between two tracks (overlapping suffix).
+    Low variance = consistent spacing (strong following signal).
+    """
+    n = min(len(points_a), len(points_b))
+    if n < 2:
+        return 0.0
+
+    pa = points_a[-n:]
+    pb = points_b[-n:]
+
+    dists = [math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
+             for (_, ax, ay), (_, bx, by) in zip(pa, pb)]
+    mean = sum(dists) / len(dists)
+    return sum((d - mean) ** 2 for d in dists) / len(dists)
+
+
+def speed_similarity(points_a, points_b):
+    """
+    1 - normalized difference of mean speeds between two tracks.
+    Returns value in [0, 1]; 1 = identical speeds.
+    """
+    n = min(len(points_a), len(points_b))
+    if n < 2:
+        return 0.0
+
+    pa = points_a[-n:]
+    pb = points_b[-n:]
+
+    def mean_speed(pts):
+        speeds = [math.sqrt((pts[i][1] - pts[i-1][1]) ** 2 + (pts[i][2] - pts[i-1][2]) ** 2)
+                  for i in range(1, len(pts))]
+        return sum(speeds) / len(speeds) if speeds else 0.0
+
+    sa = mean_speed(pa)
+    sb = mean_speed(pb)
+    denom = max(sa, sb, 1e-6)
+    return 1.0 - abs(sa - sb) / denom
