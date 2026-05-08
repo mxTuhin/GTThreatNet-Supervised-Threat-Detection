@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls *.md)",
+      "Bash(awk '{print $9}')",
+      "Bash(mkdir -p legacy src/tracking src/data src/models src/evaluation src/xai src/inference src/utilities data/outputs/eda)",
+      "Bash(touch src/__init__.py src/tracking/__init__.py src/data/__init__.py src/models/__init__.py src/evaluation/__init__.py src/xai/__init__.py src/inference/__init__.py src/utilities/__init__.py legacy/__init__.py)",
+      "Bash(python -m py_compile config.py)",
+      "Bash(python -m py_compile src/data/dataset_loader.py)",
+      "Bash(python -m py_compile src/data/feature_extractor.py)",
+      "Bash(python -m py_compile src/data/data_validator.py)",
+      "Bash(python -m py_compile src/models/bilstm_model.py)",
+      "Bash(python3 -m py_compile config.py)",
+      "Bash(python3 -m py_compile src/data/dataset_loader.py)",
+      "Bash(python3 -m py_compile src/data/feature_extractor.py)",
+      "Bash(python3 -m py_compile src/data/data_validator.py)",
+      "Bash(python3 -m py_compile src/models/bilstm_model.py)",
+      "Bash(python -c \"import pipeline; print\\('pipeline.py imports OK'\\)\")",
+      "Bash(python -c \"from src.data.augmentation import augment_csv; print\\('augmentation.py imports OK'\\)\")",
+      "Bash(python3 -c \"import pipeline; print\\('pipeline.py imports OK'\\)\")",
+      "Bash(python3 -c \"from src.data.augmentation import augment_csv; print\\('augmentation.py imports OK'\\)\")",
+      "Bash(nvidia-smi)"
+    ]
+  }
+}

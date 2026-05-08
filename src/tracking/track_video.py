@@ -1,4 +1,5 @@
 import os
+import sys
 import csv
 import math
 import argparse
@@ -6,25 +7,26 @@ import cv2
 import numpy as np
 from ultralytics import YOLO
 from collections import defaultdict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parents[2]))
+from config import (
+    YOLO_MODEL, TRACKER_CONFIG, CONFIDENCE_THR, PERSON_CLASS_ID,
+    CSV_OUT_DIR, VIDEO_OUT_DIR,
+)
 
 # ---------------------------
-# Config (defaults — override via CLI args or environment)
+# Config (defaults pulled from config.py — override via CLI args)
 # ---------------------------
-VIDEO_PATH = "../data/raw_videos/data-vid.mp4"
-OUTPUT_VIDEO_PATH = "../data/outputs/video/tracked_output_01.mp4"
-OUTPUT_TRAJECTORY_VIDEO_PATH = "../data/outputs/video/trajectory_output_01.mp4"
-OUTPUT_CSV_PATH = "../data/outputs/csv/tracked_output_01.csv"
-OUTPUT_SUMMARY_CSV_PATH = "../data/outputs/csv/track_summary_01.csv"
+VIDEO_PATH = ""
+OUTPUT_VIDEO_PATH = str(VIDEO_OUT_DIR / "tracked_output.mp4")
+OUTPUT_TRAJECTORY_VIDEO_PATH = str(VIDEO_OUT_DIR / "trajectory_output.mp4")
+OUTPUT_CSV_PATH = str(CSV_OUT_DIR / "tracked_output.csv")
+OUTPUT_SUMMARY_CSV_PATH = str(CSV_OUT_DIR / "track_summary.csv")
 
-# Trajectory trail length (number of past center points to draw); None = unlimited
 TRAJECTORY_MAXLEN = None
-
-# Detection model — yolov8m gives noticeably fewer missed detections vs yolov8n,
-# which directly reduces the number of frames a track is "lost" and thus ID switches.
-# Switch back to "yolov8n.pt" if speed is more important than accuracy.
-MODEL_NAME = "yolov8m.pt"
-CONF_THRESHOLD = 0.35
-PERSON_CLASS_ID = 0         # COCO: person
+MODEL_NAME = YOLO_MODEL
+CONF_THRESHOLD = CONFIDENCE_THR
 
 # Tracker config.
 # custom_botsort.yaml  — BoT-SORT + ReID + 5-second track buffer (recommended)

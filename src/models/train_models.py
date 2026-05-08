@@ -1,0 +1,303 @@
+"""
+train_models.py
+================
+Trains RF, XGBoost, and BiLSTM classifiers on the extracted threat windows.
+Proper train/val/test split at VIDEO level. No data leakage.
+
+Usage:
+    python src/models/train_models.py --model rf
+    python src/models/train_models.py --model xgb
+    python src/models/train_models.py --model bilstm
+    python src/models/train_models.py --model all      # trains all three
+"""
+
+import sys
+import argparse
+import warnings
+import numpy as np
+import pandas as pd
+import joblib
+from pathlib import Path
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from sklearn.model_selection import StratifiedGroupKFold, cross_val_score
+from sklearn.metrics import (
+    classification_report, confusion_matrix, f1_score,
+)
+from sklearn.pipeline import Pipeline
+
+sys.path.insert(0, str(Path(__file__).parents[2]))
+from config import (
+    THREAT_WINDOWS_CSV, SEQUENCE_WINDOWS_NPZ, MODELS_DIR, LABEL_ENCODER_PATH,
+    SPLITS_CSV, WINDOW_FEATURES, CLASS_NAMES, THREAT_TYPE_MAP,
+    RF_N_ESTIMATORS, RF_MAX_DEPTH, XGB_N_ESTIMATORS, XGB_MAX_DEPTH, XGB_LR,
+    CV_FOLDS, N_JOBS, RANDOM_SEED,
+    BILSTM_EPOCHS, BILSTM_LR, BILSTM_BATCH,
+)
+
+warnings.filterwarnings("ignore")
+
+
+# ── Data loading ──────────────────────────────────────────────────────────────
+
+def load_window_data(csv_path: str, splits_csv: str | None = None):
+    """
+    Load feature CSV, apply video-level splits if splits.csv exists.
+    Returns (df_train, df_val, df_test, label_encoder).
+    """
+    df = pd.read_csv(csv_path)
+    df = df[df["threat_type"].notna() & (df["threat_type"].astype(str).str.strip() != "")].copy()
+    df["threat_type"] = df["threat_type"].str.strip()
+
+    le = LabelEncoder()
+    le.classes_ = np.array(CLASS_NAMES)
+    df["y"] = le.transform(df["threat_type"])
+
+    # Apply video-level split
+    if splits_csv and Path(splits_csv).exists():
+        splits = pd.read_csv(splits_csv)[["video_name", "split"]]
+        df = df.merge(splits, on="video_name", how="left")
+        df["split"] = df["split"].fillna("train")
+    else:
+        # Fallback: assign splits by video name hash for reproducibility
+        rng = np.random.default_rng(RANDOM_SEED)
+        unique_videos = df["video_name"].unique()
+        rng.shuffle(unique_videos)
+        n = len(unique_videos)
+        n_train = max(1, int(n * 0.70))
+        n_val   = max(1, int(n * 0.15))
+        split_map = {}
+        for i, v in enumerate(unique_videos):
+            if i < n_train:
+                split_map[v] = "train"
+            elif i < n_train + n_val:
+                split_map[v] = "val"
+            else:
+                split_map[v] = "test"
+        df["split"] = df["video_name"].map(split_map)
+
+    df_train = df[df["split"] == "train"].copy()
+    df_val   = df[df["split"] == "val"].copy()
+    df_test  = df[df["split"] == "test"].copy()
+
+    print(f"Split sizes: train={len(df_train)}  val={len(df_val)}  test={len(df_test)}")
+    return df_train, df_val, df_test, le
+
+
+def _get_Xy(df: pd.DataFrame, features: list[str]):
+    available = [f for f in features if f in df.columns]
+    X = df[available].fillna(0.0).values
+    y = df["y"].values
+    return X, y
+
+
+# ── RF ────────────────────────────────────────────────────────────────────────
+
+def train_rf(df_train, df_val, df_test, le, features, save_dir: Path):
+    print("\n── Random Forest ─────────────────────────────────────────")
+    X_tr, y_tr = _get_Xy(df_train, features)
+    X_va, y_va = _get_Xy(df_val,   features)
+    X_te, y_te = _get_Xy(df_test,  features)
+
+    model = RandomForestClassifier(
+        n_estimators = RF_N_ESTIMATORS,
+        max_depth    = RF_MAX_DEPTH,
+        class_weight = "balanced",
+        n_jobs       = N_JOBS,
+        random_state = RANDOM_SEED,
+    )
+
+    # CV on train fold only
+    groups = df_train["video_name"].values
+    cv = StratifiedGroupKFold(n_splits=min(CV_FOLDS, len(np.unique(groups))))
+    cv_scores = cross_val_score(model, X_tr, y_tr, groups=groups, cv=cv,
+                                scoring="f1_weighted", n_jobs=N_JOBS)
+    print(f"Train CV F1 (weighted): {cv_scores.mean():.3f} ± {cv_scores.std():.3f}")
+
+    model.fit(X_tr, y_tr)
+
+    # Val evaluation
+    if len(X_va):
+        va_preds = model.predict(X_va)
+        va_f1    = f1_score(y_va, va_preds, average="weighted", zero_division=0)
+        print(f"Val  F1 (weighted):  {va_f1:.3f}")
+        print("\nVal classification report:")
+        print(classification_report(y_va, va_preds, target_names=le.classes_, zero_division=0))
+
+    # Test evaluation
+    if len(X_te):
+        te_preds = model.predict(X_te)
+        te_f1    = f1_score(y_te, te_preds, average="weighted", zero_division=0)
+        print(f"Test F1 (weighted):  {te_f1:.3f}")
+        print("\nTest classification report:")
+        print(classification_report(y_te, te_preds, target_names=le.classes_, zero_division=0))
+
+    # Feature importance
+    if hasattr(model, "feature_importances_"):
+        imp_df = pd.DataFrame({"feature": features, "importance": model.feature_importances_})
+        imp_df = imp_df.sort_values("importance", ascending=False)
+        print("\nFeature importances (top 10):")
+        print(imp_df.head(10).to_string(index=False))
+
+    # Save
+    save_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, save_dir / "rf_model.pkl")
+    joblib.dump(le,    save_dir / "label_encoder.pkl")
+    print(f"Saved → {save_dir}/rf_model.pkl")
+    return model
+
+
+# ── XGBoost ───────────────────────────────────────────────────────────────────
+
+def train_xgb(df_train, df_val, df_test, le, features, save_dir: Path):
+    try:
+        import xgboost as xgb
+    except ImportError:
+        print("[SKIP] xgboost not installed. Run: pip install xgboost")
+        return None
+
+    print("\n── XGBoost ───────────────────────────────────────────────")
+    X_tr, y_tr = _get_Xy(df_train, features)
+    X_va, y_va = _get_Xy(df_val,   features)
+    X_te, y_te = _get_Xy(df_test,  features)
+
+    n_classes = len(le.classes_)
+    objective = "multi:softprob" if n_classes > 2 else "binary:logistic"
+
+    model = xgb.XGBClassifier(
+        n_estimators    = XGB_N_ESTIMATORS,
+        max_depth       = XGB_MAX_DEPTH,
+        learning_rate   = XGB_LR,
+        objective       = objective,
+        num_class       = n_classes if n_classes > 2 else None,
+        n_jobs          = N_JOBS,
+        random_state    = RANDOM_SEED,
+        use_label_encoder = False,
+        eval_metric     = "mlogloss" if n_classes > 2 else "logloss",
+        verbosity       = 0,
+    )
+
+    eval_set = [(X_va, y_va)] if len(X_va) else None
+    model.fit(
+        X_tr, y_tr,
+        eval_set        = eval_set,
+        verbose         = False,
+    )
+
+    if len(X_va):
+        va_preds = model.predict(X_va)
+        va_f1    = f1_score(y_va, va_preds, average="weighted", zero_division=0)
+        print(f"Val  F1 (weighted):  {va_f1:.3f}")
+        print(classification_report(y_va, va_preds, target_names=le.classes_, zero_division=0))
+
+    if len(X_te):
+        te_preds = model.predict(X_te)
+        te_f1    = f1_score(y_te, te_preds, average="weighted", zero_division=0)
+        print(f"Test F1 (weighted):  {te_f1:.3f}")
+        print(classification_report(y_te, te_preds, target_names=le.classes_, zero_division=0))
+
+    imp_df = pd.DataFrame({
+        "feature":   features,
+        "importance": model.feature_importances_,
+    }).sort_values("importance", ascending=False)
+    print("\nFeature importances (top 10):")
+    print(imp_df.head(10).to_string(index=False))
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, save_dir / "xgb_model.pkl")
+    print(f"Saved → {save_dir}/xgb_model.pkl")
+    return model
+
+
+# ── BiLSTM ────────────────────────────────────────────────────────────────────
+
+def train_bilstm_model(npz_path: str, splits_csv: str, le, save_dir: Path):
+    from src.models.bilstm_model import train_bilstm
+
+    print("\n── BiLSTM ────────────────────────────────────────────────")
+    if not Path(npz_path).exists():
+        print(f"[SKIP] Sequence file not found: {npz_path}")
+        print("       Run pipeline with --mode sequence to generate it first.")
+        return None
+
+    data = np.load(npz_path, allow_pickle=True)
+    X, y, names = data["X"], data["y"], list(data["names"])
+
+    # Apply video-level splits
+    if Path(splits_csv).exists():
+        splits_df = pd.read_csv(splits_csv).set_index("video_name")["split"].to_dict()
+        def get_split(name):
+            video = name.split("_w")[0]
+            return splits_df.get(video, "train")
+        split_labels = [get_split(n) for n in names]
+    else:
+        split_labels = ["train"] * len(names)
+
+    split_arr = np.array(split_labels)
+    X_tr = X[split_arr == "train"]
+    y_tr = y[split_arr == "train"]
+    X_va = X[split_arr == "val"]
+    y_va = y[split_arr == "val"]
+    X_te = X[split_arr == "test"]
+    y_te = y[split_arr == "test"]
+
+    print(f"Sequence split: train={len(X_tr)}  val={len(X_va)}  test={len(X_te)}")
+
+    if len(X_va) == 0:
+        X_va, y_va = X_tr[:max(1, len(X_tr)//5)], y_tr[:max(1, len(X_tr)//5)]
+        print("  [WARN] No val sequences from split — using 20% of train for monitoring")
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+    model, history = train_bilstm(
+        X_train   = X_tr,
+        y_train   = y_tr,
+        X_val     = X_va,
+        y_val     = y_va,
+        n_classes = len(le.classes_),
+        epochs    = BILSTM_EPOCHS,
+        lr        = BILSTM_LR,
+        batch_size= BILSTM_BATCH,
+        save_path = str(save_dir / "bilstm_model.pt"),
+    )
+
+    if len(X_te):
+        from src.models.bilstm_model import predict_bilstm
+        te_preds, _ = predict_bilstm(X_te, str(save_dir / "bilstm_model.pt"))
+        te_f1 = f1_score(y_te, te_preds, average="weighted", zero_division=0)
+        print(f"Test F1 (weighted):  {te_f1:.3f}")
+        print(classification_report(y_te, te_preds, target_names=le.classes_, zero_division=0))
+
+    return model
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Train threat detection models")
+    parser.add_argument("--input",       default=str(THREAT_WINDOWS_CSV))
+    parser.add_argument("--seq-input",   default=str(SEQUENCE_WINDOWS_NPZ))
+    parser.add_argument("--splits",      default=str(SPLITS_CSV))
+    parser.add_argument("--model",       default="rf",
+                        choices=["rf", "xgb", "bilstm", "all"])
+    parser.add_argument("--out-dir",     default=str(MODELS_DIR))
+    args = parser.parse_args()
+
+    save_dir = Path(args.out_dir)
+    features = WINDOW_FEATURES
+
+    # Load window data (needed by RF/XGB)
+    df_train, df_val, df_test, le = load_window_data(args.input, args.splits)
+    joblib.dump(le, LABEL_ENCODER_PATH)
+
+    if args.model in ("rf", "all"):
+        train_rf(df_train, df_val, df_test, le, features, save_dir)
+
+    if args.model in ("xgb", "all"):
+        train_xgb(df_train, df_val, df_test, le, features, save_dir)
+
+    if args.model in ("bilstm", "all"):
+        train_bilstm_model(args.seq_input, args.splits, le, save_dir)
+
+
+if __name__ == "__main__":
+    main()
