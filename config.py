@@ -10,7 +10,8 @@ ROOT = Path(__file__).parent
 
 # ── Data paths ────────────────────────────────────────────────────────────────
 DATA_DIR        = ROOT / "data"
-RAW_VIDEOS_DIR  = DATA_DIR / "raw_videos"
+RAW_VIDEOS_DIR  = DATA_DIR / "raw_videos"   # original video files (input to prepare_dataset.py)
+FRAMES_DIR      = DATA_DIR / "frames"       # extracted image frames (input to pipeline.py)
 DERIVED_DIR     = DATA_DIR / "derived"
 OUTPUTS_DIR     = DATA_DIR / "outputs"
 CSV_OUT_DIR     = OUTPUTS_DIR / "csv"

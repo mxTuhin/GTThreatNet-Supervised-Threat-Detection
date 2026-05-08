@@ -48,10 +48,9 @@ def _py(script: str, *extra_args: str) -> list[str]:
 # ── Stage implementations ─────────────────────────────────────────────────────
 
 def stage_split(args):
-    return _run(_py("src/data/dataset_loader.py",
-                    "--raw-dir", "data/raw_videos",
-                    "--out",     "data/splits.csv"),
-                "Discover videos + assign train/val/test splits")
+    # No --raw-dir: dataset_loader auto-detects data/frames/ first, then data/raw_videos/
+    return _run(_py("src/data/dataset_loader.py", "--out", "data/splits.csv"),
+                "Discover frame dirs / videos + assign train/val/test splits")
 
 
 def stage_track(args):
