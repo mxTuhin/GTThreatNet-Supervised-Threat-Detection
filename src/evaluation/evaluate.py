@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import (
     THREAT_WINDOWS_CSV, SEQUENCE_WINDOWS_NPZ, MODELS_DIR, LABEL_ENCODER_PATH,
     SPLITS_CSV, WINDOW_FEATURES, CLASS_NAMES, EDA_OUT_DIR,
+    GRAPH_SEQ_NPZ,
 )
 
 warnings.filterwarnings("ignore")
@@ -196,20 +197,68 @@ def evaluate_bilstm(model_dir: Path):
     plot_pr_curves(y_te, y_proba,   classes, "BiLSTM", "bilstm_pr")
 
 
+def evaluate_stgat(model_dir: Path):
+    model_path = model_dir / "stgat_model.pt"
+    if not model_path.exists():
+        print(f"[SKIP] STGAT model not found: {model_path}")
+        return
+
+    print("\n── Evaluating STGAT ──────────────────────────────────────")
+    if not Path(GRAPH_SEQ_NPZ).exists():
+        print(f"[SKIP] Graph sequence data not found: {GRAPH_SEQ_NPZ}")
+        return
+
+    from src.models.stgat_model import predict_stgat
+    data  = np.load(str(GRAPH_SEQ_NPZ), allow_pickle=True)
+    X, A, valid, y_true = data["X"], data["A"], data["valid"], data["y"]
+    names = list(data["names"])
+
+    if Path(SPLITS_CSV).exists():
+        splits_df = pd.read_csv(SPLITS_CSV).set_index("video_name")["split"].to_dict()
+        def _get_split(name):
+            return splits_df.get(name.split("_w")[0], "train")
+        split_arr = np.array([_get_split(n) for n in names])
+    else:
+        split_arr = np.array(["train"] * len(names))
+
+    mask = split_arr == "test"
+    if mask.sum() == 0:
+        print("[WARN] No test graph sequences — evaluating on all data")
+        mask = np.ones(len(names), dtype=bool)
+
+    le      = joblib.load(LABEL_ENCODER_PATH)
+    classes = le.classes_
+    y_pred, y_proba, _ = predict_stgat(X[mask], A[mask], valid[mask],
+                                        str(model_path))
+    y_te = y_true[mask]
+
+    acc = accuracy_score(y_te, y_pred)
+    f1  = f1_score(y_te, y_pred, average="weighted", zero_division=0)
+    print(f"  Test accuracy:  {acc:.3f}")
+    print(f"  Test F1 (wtd):  {f1:.3f}")
+    print("\n" + classification_report(y_te, y_pred,
+                                       target_names=classes, zero_division=0))
+
+    plot_confusion_matrix(y_te, y_pred,   classes, "STGAT", "stgat_confusion")
+    plot_roc_curves(y_te, y_proba,         classes, "STGAT", "stgat_roc")
+    plot_pr_curves(y_te, y_proba,          classes, "STGAT", "stgat_pr")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate trained threat models")
-    parser.add_argument("--model", default="all", choices=["rf", "xgb", "bilstm", "all"])
+    parser.add_argument("--model", default="all",
+                        choices=["xgb", "bilstm", "stgat", "all"])
     parser.add_argument("--model-dir", default=str(MODELS_DIR))
     args  = parser.parse_args()
     mdir  = Path(args.model_dir)
     feats = WINDOW_FEATURES
 
-    if args.model in ("rf", "all"):
-        evaluate_sklearn_model("Random Forest", mdir / "rf_model.pkl",  feats)
     if args.model in ("xgb", "all"):
-        evaluate_sklearn_model("XGBoost",       mdir / "xgb_model.pkl", feats)
+        evaluate_sklearn_model("XGBoost", mdir / "xgb_model.pkl", feats)
     if args.model in ("bilstm", "all"):
         evaluate_bilstm(mdir)
+    if args.model in ("stgat", "all"):
+        evaluate_stgat(mdir)
 
 
 if __name__ == "__main__":

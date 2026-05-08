@@ -117,6 +117,19 @@ BILSTM_LR        = 1e-3
 BILSTM_BATCH     = 32
 BILSTM_SEQ_LEN   = WINDOW_SIZE    # = 30 frames
 
+# ── Graph / STGAT ─────────────────────────────────────────────────────────────
+GRAPH_N_MAX       = 10       # target node + up to 9 nearby persons (padded if fewer)
+GRAPH_NODE_DIM    = 4        # node feature dim: [cx, cy, vx, vy]
+GRAPH_SEQ_NPZ     = DERIVED_DIR / "graph_sequences.npz"
+
+STGAT_GAT_HIDDEN  = 32      # output dim per attention head
+STGAT_GAT_HEADS   = 4       # heads → total GAT output = 128
+STGAT_GRU_HIDDEN  = 128
+STGAT_DROPOUT     = 0.3
+STGAT_EPOCHS      = 100
+STGAT_LR          = 1e-3
+STGAT_BATCH       = 32
+
 # ── Inference ─────────────────────────────────────────────────────────────────
 THREAT_SCORE_THRESHOLD = 0.5      # above this = alert
 

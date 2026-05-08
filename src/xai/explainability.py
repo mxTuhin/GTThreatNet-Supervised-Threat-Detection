@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import (
     THREAT_WINDOWS_CSV, SEQUENCE_WINDOWS_NPZ, MODELS_DIR, LABEL_ENCODER_PATH,
     SPLITS_CSV, WINDOW_FEATURES, CLASS_NAMES, EDA_OUT_DIR,
+    GRAPH_SEQ_NPZ, GRAPH_N_MAX,
 )
 
 warnings.filterwarnings("ignore")
@@ -237,22 +238,117 @@ def explain_bilstm(model_dir: Path, max_samples: int = 50):
     print("  BiLSTM xAI complete")
 
 
+# ── STGAT GAT-attention XAI ──────────────────────────────────────────────────
+
+def explain_stgat(model_dir: Path, max_samples: int = 100):
+    """
+    Visualise GAT attention weights as XAI for STGAT.
+
+    attn[b, t, i, j] = how much node j influenced node i at timestep t.
+    We focus on row 0 (target node): attn[:, :, 0, 1:] shows how much
+    each nearby person influenced the target's representation.
+
+    Produces:
+      stgat_person_importance_<class>.png  — mean attention from target to each node slot
+      stgat_attention_timeline_<class>.png — attention over time per node slot
+    """
+    model_path = model_dir / "stgat_model.pt"
+    if not model_path.exists():
+        print(f"[SKIP] STGAT model not found: {model_path}")
+        return
+    if not Path(GRAPH_SEQ_NPZ).exists():
+        print(f"[SKIP] Graph sequence data not found: {GRAPH_SEQ_NPZ}")
+        return
+
+    print("\n── STGAT GAT Attention XAI ───────────────────────────────")
+    import torch
+    from src.models.stgat_model import predict_stgat
+
+    data  = np.load(str(GRAPH_SEQ_NPZ), allow_pickle=True)
+    X, A, valid, y_true = data["X"], data["A"], data["valid"], data["y"]
+    le      = joblib.load(LABEL_ENCODER_PATH)
+    classes = le.classes_
+
+    sample  = min(max_samples, len(X))
+    _, _, attns = predict_stgat(
+        X[:sample], A[:sample], valid[:sample], str(model_path)
+    )
+    # attns: (N, T, N_MAX, N_MAX)
+    # Target-to-others: attns[:, :, 0, :]  shape (N, T, N_MAX)
+    target_attn = attns[:, :, 0, :]    # (N, T, N_MAX)
+    y_s = y_true[:sample]
+    T   = target_attn.shape[1]
+    N   = GRAPH_N_MAX
+
+    node_labels = ["target"] + [f"person {i}" for i in range(1, N)]
+
+    # ── Mean person importance per class ─────────────────────────────────────
+    fig, axes = plt.subplots(1, len(classes), figsize=(5 * len(classes), 4),
+                              sharey=True)
+    if len(classes) == 1:
+        axes = [axes]
+    for i, (cls, ax) in enumerate(zip(classes, axes)):
+        mask = y_s == i
+        if mask.sum() == 0:
+            ax.set_visible(False)
+            continue
+        mean_imp = target_attn[mask].mean(axis=(0, 1))   # (N_MAX,)
+        colors   = ["steelblue" if j == 0 else "tomato" for j in range(N)]
+        ax.bar(node_labels, mean_imp, color=colors)
+        ax.set_title(f"Class: {cls}")
+        ax.set_xlabel("Node")
+        ax.tick_params(axis="x", rotation=45)
+        if i == 0:
+            ax.set_ylabel("Mean GAT attention")
+    fig.suptitle("STGAT — Target Node's Attention to Each Person (mean over time)")
+    fig.tight_layout()
+    _save(fig, "stgat_person_importance")
+
+    # ── Attention timeline per class ─────────────────────────────────────────
+    palette = plt.cm.get_cmap("tab10")(np.linspace(0, 1, N))
+    fig, axes = plt.subplots(1, len(classes), figsize=(5 * len(classes), 4),
+                              sharey=True)
+    if len(classes) == 1:
+        axes = [axes]
+    for i, (cls, ax) in enumerate(zip(classes, axes)):
+        mask = y_s == i
+        if mask.sum() == 0:
+            ax.set_visible(False)
+            continue
+        mean_over_time = target_attn[mask].mean(axis=0)  # (T, N_MAX)
+        for ni in range(1, N):                            # skip target self-attn
+            ax.plot(mean_over_time[:, ni], label=node_labels[ni],
+                    color=palette[ni], alpha=0.8)
+        ax.set_title(f"Class: {cls}")
+        ax.set_xlabel("Frame (within window)")
+        if i == 0:
+            ax.set_ylabel("Mean attention")
+        if i == len(classes) - 1:
+            ax.legend(fontsize=6, loc="upper right")
+    fig.suptitle("STGAT — Attention from Target to Each Nearby Person Over Time")
+    fig.tight_layout()
+    _save(fig, "stgat_attention_timeline")
+
+    print("  STGAT xAI complete")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="xAI explanations for trained models")
-    parser.add_argument("--model",     default="rf", choices=["rf", "xgb", "bilstm", "all"])
-    parser.add_argument("--model-dir", default=str(MODELS_DIR))
+    parser.add_argument("--model",       default="all",
+                        choices=["xgb", "bilstm", "stgat", "all"])
+    parser.add_argument("--model-dir",   default=str(MODELS_DIR))
     parser.add_argument("--max-samples", type=int, default=200)
     args = parser.parse_args()
     mdir = Path(args.model_dir)
 
-    if args.model in ("rf", "all"):
-        explain_tree_model("Random Forest", mdir / "rf_model.pkl",  args.max_samples)
     if args.model in ("xgb", "all"):
-        explain_tree_model("XGBoost",       mdir / "xgb_model.pkl", args.max_samples)
+        explain_tree_model("XGBoost",   mdir / "xgb_model.pkl", args.max_samples)
     if args.model in ("bilstm", "all"):
         explain_bilstm(mdir, args.max_samples)
+    if args.model in ("stgat", "all"):
+        explain_stgat(mdir, args.max_samples)
 
 
 if __name__ == "__main__":

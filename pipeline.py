@@ -159,9 +159,15 @@ def stage_augment(args):
 def stage_features(args):
     """
     Parallel feature extraction using joblib.
-    Reads splits.csv, extracts window + sequence features for each video.
+    Reads splits.csv, extracts:
+      - Window features  → threat_windows.csv     (XGBoost)
+      - Sequence features→ sequence_windows.npz   (BiLSTM)
+      - Graph sequences  → graph_sequences.npz    (STGAT)
     """
-    from config import CSV_OUT_DIR, THREAT_WINDOWS_CSV, SEQUENCE_WINDOWS_NPZ
+    from config import (
+        CSV_OUT_DIR, THREAT_WINDOWS_CSV,
+        SEQUENCE_WINDOWS_NPZ, GRAPH_SEQ_NPZ,
+    )
     import csv, os
     import joblib
 
@@ -173,73 +179,76 @@ def stage_features(args):
     with open(splits_csv) as f:
         records = list(csv.DictReader(f))
 
-    # Clear output files so we start fresh (not append from old run)
-    if THREAT_WINDOWS_CSV.exists():
-        THREAT_WINDOWS_CSV.unlink()
-    if SEQUENCE_WINDOWS_NPZ.exists():
-        SEQUENCE_WINDOWS_NPZ.unlink()
+    # Clear output files so we start fresh
+    for p in [THREAT_WINDOWS_CSV, SEQUENCE_WINDOWS_NPZ, GRAPH_SEQ_NPZ]:
+        if p.exists():
+            p.unlink()
 
     def _extract_one(rec):
-        vpath     = Path(rec["video_path"])
-        stem      = vpath.stem
-        csv_path  = str(CSV_OUT_DIR / f"{stem}.csv")
+        vpath = Path(rec["video_path"])
+        stem  = vpath.stem
+        # Augmented records store the full CSV path directly in video_path
+        csv_path = str(vpath) if vpath.suffix.lower() == ".csv" \
+                   else str(CSV_OUT_DIR / f"{stem}.csv")
         if not Path(csv_path).exists():
             print(f"  [SKIP] No tracked CSV for {stem} — run --stage track first")
-            return None, None
+            return None, None, None
 
         from src.data.feature_extractor import (
-            extract_windows, write_windows,
-            extract_sequences, append_sequences,
+            extract_windows, extract_sequences, extract_graph_sequences,
         )
 
         threat_type  = rec.get("threat_type", "")
         binary_label = int(rec.get("binary_label", -1))
+        kw = dict(csv_path=csv_path, video_name=stem,
+                  threat_type=threat_type, binary_label=binary_label)
 
-        rows = extract_windows(
-            csv_path     = csv_path,
-            video_name   = stem,
-            threat_type  = threat_type,
-            binary_label = binary_label,
-        )
+        rows             = extract_windows(**kw)
+        X, y, names      = extract_sequences(**kw)
+        Xg, Ag, vg, yg, ng = extract_graph_sequences(**kw)
 
-        X, y, names = extract_sequences(
-            csv_path     = csv_path,
-            video_name   = stem,
-            threat_type  = threat_type,
-            binary_label = binary_label,
-        )
-        return rows, (X, y, names)
+        return rows, (X, y, names), (Xg, Ag, vg, yg, ng)
 
-    # Parallel feature extraction (CPU-bound)
     n_jobs = int(getattr(args, "jobs", -1)) if hasattr(args, "jobs") else -1
     results = joblib.Parallel(n_jobs=n_jobs, backend="loky", verbose=5)(
         joblib.delayed(_extract_one)(rec) for rec in records
     )
 
-    # Sequentially merge results (file I/O must be serial)
-    first_window = True
     import numpy as np
-    all_X, all_y, all_names = [], [], []
-    for rows, seq_data in results:
+    from src.data.feature_extractor import (
+        write_windows, append_sequences, append_graph_sequences,
+    )
+
+    first_window = True
+    all_X,  all_y,  all_names  = [], [], []
+    all_Xg, all_Ag, all_vg     = [], [], []
+    all_yg, all_ng             = [], []
+
+    for rows, seq_data, graph_data in results:
         if rows is None:
             continue
         if rows:
-            from src.data.feature_extractor import write_windows
             write_windows(rows, str(THREAT_WINDOWS_CSV), append=not first_window)
             first_window = False
         if seq_data is not None and len(seq_data[0]) > 0:
-            X, y, names = seq_data
-            all_X.append(X)
-            all_y.append(y)
-            all_names.extend(names)
+            all_X.append(seq_data[0]); all_y.append(seq_data[1])
+            all_names.extend(seq_data[2])
+        if graph_data is not None and len(graph_data[0]) > 0:
+            all_Xg.append(graph_data[0]); all_Ag.append(graph_data[1])
+            all_vg.append(graph_data[2]); all_yg.append(graph_data[3])
+            all_ng.extend(graph_data[4])
 
     if all_X:
-        from src.data.feature_extractor import append_sequences
-        import numpy as np
         append_sequences(np.concatenate(all_X), np.concatenate(all_y),
                          all_names, str(SEQUENCE_WINDOWS_NPZ))
+    if all_Xg:
+        append_graph_sequences(
+            np.concatenate(all_Xg), np.concatenate(all_Ag),
+            np.concatenate(all_vg), np.concatenate(all_yg),
+            all_ng, str(GRAPH_SEQ_NPZ),
+        )
 
-    print(f"\nFeature extraction complete.")
+    print("\nFeature extraction complete.")
     return 0
 
 
@@ -252,7 +261,7 @@ def stage_eda_pre(args):
 
 
 def stage_train(args):
-    model = getattr(args, "model", "rf") or "rf"
+    model = getattr(args, "model", "all") or "all"
     return _run(_py("src/models/train_models.py", "--model", model), f"Train [{model}]")
 
 
@@ -262,14 +271,14 @@ def stage_evaluate(args):
 
 
 def stage_eda_post(args):
-    model = getattr(args, "model", "rf") or "rf"
+    model = getattr(args, "model", "xgb") or "xgb"
     if model == "all":
-        model = "rf"
+        model = "xgb"
     return _run(_py("src/evaluation/post_train_eda.py", "--model", model), f"Post-Train EDA [{model}]")
 
 
 def stage_explain(args):
-    model = getattr(args, "model", "rf") or "rf"
+    model = getattr(args, "model", "all") or "all"
     return _run(_py("src/xai/explainability.py", "--model", model), f"xAI [{model}]")
 
 
@@ -361,7 +370,9 @@ Stages:
                         default=["flip", "rotate", "scale"],
                         choices=["flip", "rotate", "scale", "all"],
                         help="Augmentation types for --stage augment")
-    parser.add_argument("--model",    default="all", help="Model type for train/evaluate/explain/eda-post")
+    parser.add_argument("--model",    default="all",
+                        choices=["xgb", "bilstm", "stgat", "all"],
+                        help="Model for train/evaluate/explain/eda-post")
     parser.add_argument("--raw-video", help="Raw video path for --stage infer")
     parser.add_argument("--input",    help="Tracked CSV for --stage infer")
     parser.add_argument("--output-video", help="Annotated video output for --stage infer")
