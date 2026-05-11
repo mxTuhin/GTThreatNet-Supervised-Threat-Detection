@@ -47,6 +47,16 @@ def _py(script: str, *extra_args: str) -> list[str]:
 
 # ── Stage implementations ─────────────────────────────────────────────────────
 
+def stage_prepare(args):
+    """Extract frames from raw_videos/ into frames/ (skips already-done clips)."""
+    cmd = _py("prepare_dataset.py")
+    if getattr(args, "fps", None):
+        cmd += ["--fps", str(args.fps)]
+    if getattr(args, "resize", None):
+        cmd += ["--resize"] + [str(v) for v in args.resize]
+    return _run(cmd, "Extract frames from raw videos")
+
+
 def stage_split(args):
     # No --raw-dir: dataset_loader auto-detects data/frames/ first, then data/raw_videos/
     return _run(_py("src/data/dataset_loader.py", "--out", "data/splits.csv"),
@@ -75,16 +85,20 @@ def stage_track(args):
         if not vpath.exists():
             print(f"  [SKIP] Video not found: {vpath}")
             return
-        stem    = vpath.stem
-        out_csv = str(CSV_OUT_DIR / f"{stem}.csv")
-        out_vid = str(VIDEO_OUT_DIR / f"{stem}_tracked.mp4")
+        stem     = vpath.stem
+        out_csv  = str(CSV_OUT_DIR / f"{stem}.csv")
+        out_vid  = str(VIDEO_OUT_DIR / f"{stem}_tracked.mp4")
+        out_traj = str(VIDEO_OUT_DIR / f"{stem}_trajectory.mp4")
+        out_sum  = str(CSV_OUT_DIR / f"{stem}_summary.csv")
         if Path(out_csv).exists():
             print(f"  [SKIP] Already tracked: {stem}")
             return
         cmd = _py("src/tracking/track_video.py",
-                  "--input",   str(vpath),
-                  "--out-csv", out_csv,
-                  "--out-video", out_vid,
+                  "--input",       str(vpath),
+                  "--out-csv",     out_csv,
+                  "--out-video",   out_vid,
+                  "--out-traj",    out_traj,
+                  "--out-summary", out_sum,
                   "--no-display")
         subprocess.run(cmd)
 
@@ -271,8 +285,6 @@ def stage_evaluate(args):
 
 def stage_eda_post(args):
     model = getattr(args, "model", "xgb") or "xgb"
-    if model == "all":
-        model = "xgb"
     return _run(_py("src/evaluation/post_train_eda.py", "--model", model), f"Post-Train EDA [{model}]")
 
 
@@ -298,9 +310,10 @@ def stage_infer(args):
 def stage_all(args):
     """Run the full training pipeline end-to-end."""
     stages = [
+        ("prepare",   stage_prepare),
         ("split",     stage_split),
         ("track",     stage_track),
-        ("augment",   stage_augment),
+        # ("augment",   stage_augment),  # skipped — enough images collected
         ("features",  stage_features),
         ("validate",  stage_validate),
         ("eda-pre",   stage_eda_pre),
@@ -329,6 +342,7 @@ def stage_all(args):
 
 STAGE_MAP = {
     "all":          stage_all,
+    "prepare":      stage_prepare,
     "split":        stage_split,
     "track":        stage_track,
     "augment":      stage_augment,
@@ -350,8 +364,9 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Stages:
-  split          Discover raw videos and assign train/val/test splits
-  track          Run YOLO tracking on all videos in splits.csv
+  prepare        Extract frames from raw_videos/ into frames/ (skips already done)
+  split          Discover frame dirs / videos and assign train/val/test splits
+  track          Run YOLO tracking on all sources in splits.csv
   augment        Augment training-split tracked CSVs (flip/rotate/scale)
   features       Extract window + sequence features (parallel via joblib)
   validate       Check data quality before training
@@ -361,10 +376,11 @@ Stages:
   eda-post       Post-training error analysis
   explain        SHAP / BiLSTM attention xAI
   infer          Run inference on a new video
-  all            Run full pipeline (split→track→features→...→explain)
+  all            Run full pipeline (prepare→split→track→...→explain)  [default]
 """,
     )
-    parser.add_argument("--stage",    default="all", choices=list(STAGE_MAP.keys()))
+    parser.add_argument("--stage",    default="all", choices=list(STAGE_MAP.keys()),
+                        help="Pipeline stage to run (default: all = full run from frame extraction)")
     parser.add_argument("--augmentations", nargs="+",
                         default=["flip", "rotate", "scale"],
                         choices=["flip", "rotate", "scale", "all"],
@@ -375,6 +391,10 @@ Stages:
     parser.add_argument("--raw-video", help="Raw video path for --stage infer")
     parser.add_argument("--input",    help="Tracked CSV for --stage infer")
     parser.add_argument("--output-video", help="Annotated video output for --stage infer")
+    parser.add_argument("--fps",      type=float, default=None,
+                        help="Target FPS for frame extraction (--stage prepare/all)")
+    parser.add_argument("--resize",   nargs=2, type=int, metavar=("W", "H"), default=None,
+                        help="Resize frames during extraction (e.g. --resize 1280 720)")
     parser.add_argument("--jobs",     type=int, default=-1, help="Parallel workers (-1=all cores)")
     args = parser.parse_args()
 

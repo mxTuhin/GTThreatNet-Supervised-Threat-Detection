@@ -83,7 +83,9 @@ def explain_tree_model(model_name: str, model_path: Path, max_samples: int = 200
     print(f"\n── SHAP for {model_name} ─────────────────────────────────")
     model = joblib.load(model_path)
     X, y, le, feats = _load_window_data(WINDOW_FEATURES)
-    X_sample = X.sample(min(max_samples, len(X)), random_state=42)
+    X_sample  = X.sample(min(max_samples, len(X)), random_state=42)
+    sample_pos = X.index.get_indexer(X_sample.index)
+    y_sample   = y[sample_pos]
 
     explainer   = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(X_sample)
@@ -124,12 +126,14 @@ def explain_tree_model(model_name: str, model_path: Path, max_samples: int = 200
 
     # ── Local: waterfall for one example per class ────────────────────────────
     for i, cls in enumerate(classes):
-        cls_mask = y == i
+        cls_mask = y_sample == i
         if cls_mask.sum() == 0:
             continue
         idx = int(np.where(cls_mask)[0][0])
         if isinstance(shap_values, list):
             sv = shap_values[i][idx]
+        elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+            sv = shap_values[idx, :, i]
         else:
             sv = shap_values[idx]
 
@@ -168,7 +172,7 @@ def explain_bilstm(model_dir: Path, max_samples: int = 50):
     le = joblib.load(LABEL_ENCODER_PATH)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ckpt   = torch.load(str(model_path), map_location=device)
+    ckpt   = torch.load(str(model_path), map_location=device, weights_only=False)
     n_cls  = ckpt["n_classes"]
     mean, std = ckpt["norm_mean"], ckpt["norm_std"]
 

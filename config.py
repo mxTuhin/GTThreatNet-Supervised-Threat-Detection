@@ -127,7 +127,8 @@ STGAT_GAT_HIDDEN  = 32      # output dim per attention head
 STGAT_GAT_HEADS   = 4       # heads → total GAT output = 128
 STGAT_GRU_HIDDEN  = 128
 STGAT_DROPOUT     = 0.3
-STGAT_EPOCHS      = 100
+STGAT_EPOCHS      = 25
+STGAT_PATIENCE    = 10
 STGAT_LR          = 1e-3
 STGAT_BATCH       = 32
 

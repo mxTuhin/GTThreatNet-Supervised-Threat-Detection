@@ -28,11 +28,6 @@ TRAJECTORY_MAXLEN = None
 MODEL_NAME = YOLO_MODEL
 CONF_THRESHOLD = CONFIDENCE_THR
 
-# Tracker config.
-# custom_botsort.yaml  — BoT-SORT + ReID + 5-second track buffer (recommended)
-# custom_bytetrack.yaml — ByteTrack + 5-second buffer, no ReID (lighter fallback)
-TRACKER_CONFIG = "custom_botsort.yaml"
-
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
 
