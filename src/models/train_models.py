@@ -1,13 +1,13 @@
 """
 train_models.py
 ================
-Trains RF, XGBoost, and BiLSTM classifiers on the extracted threat windows.
+Trains XGBoost, BiLSTM, and STGAT classifiers on the extracted threat windows.
 Proper train/val/test split at VIDEO level. No data leakage.
 
 Usage:
-    python src/models/train_models.py --model rf
     python src/models/train_models.py --model xgb
     python src/models/train_models.py --model bilstm
+    python src/models/train_models.py --model stgat
     python src/models/train_models.py --model all      # trains all three
 """
 

@@ -211,7 +211,7 @@ def predict_bilstm(
     Returns (pred_labels: int array, pred_probs: float (N, n_classes)).
     """
     device = _get_device()
-    ckpt   = torch.load(checkpoint_path, map_location=device)
+    ckpt   = torch.load(checkpoint_path, map_location=device, weights_only=False)
     n_classes = ckpt["n_classes"]
 
     model = BiLSTMThreatClassifier(n_classes=n_classes).to(device)

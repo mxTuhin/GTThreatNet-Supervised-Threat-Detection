@@ -28,10 +28,63 @@ TRAJECTORY_MAXLEN = None
 MODEL_NAME = YOLO_MODEL
 CONF_THRESHOLD = CONFIDENCE_THR
 
-# Tracker config.
-# custom_botsort.yaml  — BoT-SORT + ReID + 5-second track buffer (recommended)
-# custom_bytetrack.yaml — ByteTrack + 5-second buffer, no ReID (lighter fallback)
-TRACKER_CONFIG = "custom_botsort.yaml"
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+
+
+class _FrameSource:
+    """
+    Unified frame source — transparently handles both:
+      • a video file  (mp4, avi, mov, …)
+      • a directory of image frames  (jpg/png, sorted by filename)
+
+    Exposes the same .read() / .release() / .fps / .width / .height
+    interface as cv2.VideoCapture so the tracking loop is unchanged.
+    """
+
+    def __init__(self, input_path: str, default_fps: float = 30.0):
+        p = Path(input_path)
+        if p.is_dir():
+            files = sorted(
+                f for f in p.iterdir() if f.suffix.lower() in _IMAGE_EXTS
+            )
+            if not files:
+                raise RuntimeError(f"No images found in: {input_path}")
+            first = cv2.imread(str(files[0]))
+            if first is None:
+                raise RuntimeError(f"Could not read first frame: {files[0]}")
+            self.height, self.width = first.shape[:2]
+            # honour a fps.txt sidecar written by prepare_dataset.py, else default
+            fps_file = p / "fps.txt"
+            self.fps = (
+                float(fps_file.read_text().strip()) if fps_file.exists()
+                else default_fps
+            )
+            self._mode  = "dir"
+            self._files = files
+            self._idx   = 0
+        else:
+            cap = cv2.VideoCapture(input_path)
+            if not cap.isOpened():
+                raise RuntimeError(f"Could not open video: {input_path}")
+            self.width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.fps    = cap.get(cv2.CAP_PROP_FPS) or default_fps
+            self._mode  = "video"
+            self._cap   = cap
+
+    def read(self):
+        if self._mode == "dir":
+            if self._idx >= len(self._files):
+                return False, None
+            frame = cv2.imread(str(self._files[self._idx]))
+            self._idx += 1
+            return (frame is not None), frame
+        return self._cap.read()
+
+    def release(self):
+        if self._mode == "video":
+            self._cap.release()
+
 
 def get_box_center(x1, y1, x2, y2):
     cx = int((x1 + x2) / 2)
@@ -176,15 +229,10 @@ def main():
 
     model = YOLO(MODEL_NAME)
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open video: {video_path}")
-
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps <= 0:
-        fps = 30.0
+    cap    = _FrameSource(video_path)
+    width  = cap.width
+    height = cap.height
+    fps    = cap.fps
 
     # safer lookup for VideoWriter_fourcc (some stubs/type checkers may flag it)
     fourcc_func = getattr(cv2, "VideoWriter_fourcc", None)

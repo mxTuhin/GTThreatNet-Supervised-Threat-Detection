@@ -19,7 +19,11 @@
       "Bash(python -c \"from src.data.augmentation import augment_csv; print\\('augmentation.py imports OK'\\)\")",
       "Bash(python3 -c \"import pipeline; print\\('pipeline.py imports OK'\\)\")",
       "Bash(python3 -c \"from src.data.augmentation import augment_csv; print\\('augmentation.py imports OK'\\)\")",
-      "Bash(nvidia-smi)"
+      "Bash(nvidia-smi)",
+      "Bash(cat)",
+      "Read(//tmp/**)",
+      "Bash(awk -F',' '{print $4\",\"$5}')",
+      "Bash(sort -k2)"
     ]
   }
 }

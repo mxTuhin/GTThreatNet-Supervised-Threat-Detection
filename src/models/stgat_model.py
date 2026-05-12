@@ -41,7 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parents[2]))
 from config import (
     STGAT_GAT_HIDDEN, STGAT_GAT_HEADS, STGAT_GRU_HIDDEN, STGAT_DROPOUT,
-    STGAT_EPOCHS, STGAT_LR, STGAT_BATCH,
+    STGAT_EPOCHS, STGAT_PATIENCE, STGAT_LR, STGAT_BATCH,
     GRAPH_NODE_DIM, GRAPH_N_MAX, CLASS_NAMES, RANDOM_SEED,
 )
 
@@ -224,6 +224,7 @@ def train_stgat(
     y_val:       np.ndarray,
     n_classes:   int   = len(CLASS_NAMES),
     epochs:      int   = STGAT_EPOCHS,
+    patience:    int   = STGAT_PATIENCE,
     lr:          float = STGAT_LR,
     batch_size:  int   = STGAT_BATCH,
     save_path:   str | None = None,
@@ -258,9 +259,10 @@ def train_stgat(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-    history      = {"train_loss": [], "val_loss": [], "val_acc": []}
-    best_val_acc = -1.0
-    best_state   = None
+    history       = {"train_loss": [], "val_loss": [], "val_acc": []}
+    best_val_loss = float("inf")
+    best_state    = None
+    no_improve    = 0
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -294,14 +296,22 @@ def train_stgat(
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_state   = {k: v.clone() for k, v in model.state_dict().items()}
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_state    = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve    = 0
+        else:
+            no_improve += 1
 
         if epoch % 10 == 0 or epoch == 1:
             print(f"    Epoch {epoch:3d}/{epochs}  "
                   f"train_loss={epoch_loss:.4f}  "
                   f"val_loss={val_loss:.4f}  val_acc={val_acc:.3f}")
+
+        if no_improve >= patience:
+            print(f"    Early stopping at epoch {epoch} "
+                  f"(no val_loss improvement for {patience} epochs)")
+            break
 
     if best_state:
         model.load_state_dict(best_state)
@@ -315,7 +325,7 @@ def train_stgat(
             "n_classes":   n_classes,
             "class_names": CLASS_NAMES,
         }, save_path)
-        print(f"  Saved STGAT → {save_path}  (best val_acc={best_val_acc:.3f})")
+        print(f"  Saved STGAT → {save_path}  (best val_loss={best_val_loss:.4f})")
 
     return model, history
 
