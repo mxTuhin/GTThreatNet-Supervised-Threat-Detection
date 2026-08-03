@@ -23,7 +23,9 @@
       "Bash(cat)",
       "Read(//tmp/**)",
       "Bash(awk -F',' '{print $4\",\"$5}')",
-      "Bash(sort -k2)"
+      "Bash(sort -k2)",
+      "Bash(python *)",
+      "Bash(python3 *)"
     ]
   }
 }
